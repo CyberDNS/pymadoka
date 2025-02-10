@@ -108,8 +108,29 @@ async def set_fan_speed(controller:Controller,payload:str):
         elif controller.operation_mode.status.operation_mode == OperationModeEnum.COOL:
             new_cooling_fan_speed = value
 
-        status = FanSpeedStatus(FanSpeedEnum[new_cooling_fan_speed],
-                                FanSpeedEnum[new_heating_fan_speed])
+        if new_cooling_fan_speed == "HIGH":
+            cooling_fan_speed_value = FanSpeedEnum(5)
+        elif new_cooling_fan_speed == "MID":
+            cooling_fan_speed_value = FanSpeedEnum(3)
+        elif new_cooling_fan_speed == "LOW":
+            cooling_fan_speed_value = FanSpeedEnum(1)
+        else:
+            cooling_fan_speed_value = FanSpeedEnum(0)
+
+        if new_heating_fan_speed == "HIGH":
+            heating_fan_speed_value = FanSpeedEnum(5)
+        elif new_heating_fan_speed == "MID":
+            heating_fan_speed_value = FanSpeedEnum(3)
+        elif new_heating_fan_speed == "LOW":
+            heating_fan_speed_value = FanSpeedEnum(1)
+        else:
+            heating_fan_speed_value = FanSpeedEnum(0)   
+
+        status = FanSpeedStatus(cooling_fan_speed_value,
+                                heating_fan_speed_value)
+        
+        logging.error(f"status: {status}")
+
         await controller.fan_speed.update(status)
     except CancelledError as e:
         logging.error(f"Could not update operation mode: {str(e)}")
@@ -221,22 +242,46 @@ class MQTT:
         device: Dict[str, Any] = field(default_factory=dict)
         availability: Dict[str, Any] = field(default=dict)
 
+# Example of state json for templates
+# {"fan_speed": {"cooling_fan_speed": "AUTO", "heating_fan_speed": "AUTO"}, "operation_mode": {"operation_mode": "HEAT"}, "power_state": {"turn_on": false}, "set_point": {"cooling_set_point": 21, "heating_set_point": 19, "range_enabled": 0, "mode": 0, "min_differential": 0, "min_cooling_lowerlimit": 0, "min_heating_lowerlimit": 0, "cooling_lowerlimit": 17, "heating_lowerlimit": 16, "cooling_lowerlimit_symbol": 0, "heating_lowerlimit_symbol": 0, "max_cooling_upperlimit": 0, "max_heating_upperlimit": 0, "cooling_upperlimit": 32, "heating_upperlimit": 31, "cooling_upperlimit_symbol": 0, "heating_upperlimit_symbol": 0}, "temperatures": {"indoor": 17, "outdoor": 4}, "clean_filter_indicator": {"clean_filter_indicator": false}}
+
+
         def __init__(self,device_name: str, device_friendly_name: str, device_topic: str, dev_info: Dict[str, Any]):
             self.modes = ["auto","off","cool","heat","dry","fan_only"]
-            self.fan_modes = ["low","medium","high"]
+            self.fan_modes = ["auto","low","medium","high"]
             self.availability = {"payload_available": 1,
                                 "payload_not_available": 0,
                                 "topic": device_topic + "/available"
                                 }
+            
+            # add home assistant optimistic mode
+            self.optimistic = True
+
             self.current_temperature_topic = "/".join([device_topic,MQTT.STATE_TOPIC,"get"])
+            self.current_temperature_template = "{{ value_json.temperatures.indoor }}"
             self.fan_mode_command_topic = "/".join([device_topic,MQTT.FAN_SPEED_TOPIC,"set"])
             self.fan_mode_state_topic = "/".join([device_topic,MQTT.STATE_TOPIC,"get"])
+            self.fan_mode_state_template = "{{ value_json.fan_speed.cooling_fan_speed.lower() if value_json.operation_mode.operation_mode.lower() == 'cool' else value_json.fan_speed.heating_fan_speed.lower() }}"
             self.mode_command_topic = "/".join([device_topic,MQTT.OPERATION_MODE_TOPIC,"set"])
             self.mode_state_topic = "/".join([device_topic,MQTT.STATE_TOPIC,"get"])
+            self.mode_state_template = "{{ value_json.operation_mode.operation_mode.lower() if value_json.power_state.turn_on else 'off' }}"
             self.power_command_topic = "/".join([device_topic,MQTT.POWER_STATE_TOPIC,"set"])
             self.temperature_state_topic = "/".join([device_topic,MQTT.STATE_TOPIC,"get"])
+            self.temperature_state_template = "{{ value_json.set_point.heating_set_point if value_json.operation_mode.operation_mode.lower() == 'heat' else value_json.set_point.cooling_set_point }}"
             self.temperature_command_topic = "/".join([device_topic,MQTT.SET_POINT_TOPIC,"set"])
+            self.temperature_command_template = "{{ int(value) }}"
             
+
+            self.temperature_command_template = "{{ int(value) }}"
+            self.temperature_state_template = "{{ value_json.set_point['heating_set_point'] if value_json.operation_mode['operation_mode']=='HEAT' else value_json.set_point['cooling_set_point']}}"
+            self.mode_state_template =  "{% set values = {None:None,'off':'off','HEAT':'heat','COOL':'cool','FAN':'fan_only', 'AUTO':'auto', 'DRY':'dry'} %} {{values[value_json.operation_mode['operation_mode']] if value_json.power_state['turn_on'] else 'off' }}"
+            #self.mode_command_template = "{% set values = { 'auto':'AUTO', 'heat':'HEAT', 'cool':'COOL', 'fan_only':'FAN','off':'AUTO','dry':'DRY'} %}{{ values[value] if value in values.keys() else 'AUTO' }}"
+            self.fan_mode_state_template = "{% set values = { 'AUTO':'auto', 'LOW':'low', 'MID':'medium', 'HIGH':'high'} %} {{ values[value_json.fan_speed['heating_fan_speed']] if value_json.operation_mode['operation_mode']=='HEAT' else values[value_json.fan_speed['cooling_fan_speed']]}}"
+            self.fan_mode_command_template = "{% set values = { 'auto':'AUTO', 'low':'LOW', 'medium':'MID', 'high':'HIGH'} %}{{ values[value] }}"
+            self.current_temperature_template = "{{ value_json.temperatures['indoor'] }}"
+
+
+
             # These are usually set by HA, but we will enforce them
             self.unique_id = device_name
             self.name = device_friendly_name
@@ -264,7 +309,6 @@ class MQTT:
                 "manufacturer": "DAIKIN",
                 "model": model,
                 "sw_version": sw_version,
-                "via_device": ("daikin_madoka", self.unique_id),
             }
 
             
